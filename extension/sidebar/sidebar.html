@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Automation Assistant</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>🤖 Automation Assistant</h1>
+      <div class="status-badge" id="statusBadge">
+        <span class="status-dot"></span>
+        <span id="statusText">Ready</span>
+      </div>
+    </div>
+
+    <!-- Command Input Section -->
+    <div class="input-section">
+      <label for="commandInput">What would you like to do?</label>
+      <textarea 
+        id="commandInput" 
+        placeholder="e.g., Fill the login form with test credentials and click submit"
+        rows="3"
+      ></textarea>
+      
+      <div class="button-group">
+        <button id="executeBtn" class="btn btn-primary">
+          Execute Task
+        </button>
+        <button id="stopBtn" class="btn btn-secondary" disabled>
+          Stop
+        </button>
+      </div>
+    </div>
+
+    <!-- Status Display -->
+    <div class="status-section">
+      <h3>Current Status</h3>
+      <div id="currentStatus" class="status-message">
+        Waiting for command...
+      </div>
+      <div id="progressBar" class="progress-bar" style="display: none;">
+        <div class="progress-fill"></div>
+      </div>
+    </div>
+
+    <!-- Action History -->
+    <div class="history-section">
+      <div class="history-header">
+        <h3>Action History</h3>
+        <button id="clearHistoryBtn" class="btn-icon">Clear</button>
+      </div>
+      <div id="actionHistory" class="history-list">
+        <!-- Actions will be added here dynamically -->
+      </div>
+    </div>
+
+    <!-- Debug Section (collapsible) -->
+    <div class="debug-section">
+      <button id="debugToggle" class="debug-toggle">
+        Show Debug Info ▼
+      </button>
+      <div id="debugContent" class="debug-content" style="display: none;">
+        <div class="debug-item">
+          <strong>Session ID:</strong> <span id="sessionId">-</span>
+        </div>
+        <div class="debug-item">
+          <strong>Tab ID:</strong> <span id="tabId">-</span>
+        </div>
+        <div class="debug-item">
+          <strong>Backend:</strong> <span id="backendStatus">Not connected</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="sidebar.js"></script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+{
+    "manifest_version": 3,
+    "name": "Browser Agents",
+    "version": "1.0",
+    "description": "An extension that automates Browser tasks.",
+    "permissions": [
+        "storage",
+        "tabs",
+        "activeTab",
+        "scripting",
+        "sidePanel",
+        "alarms",
+        "webNavigation"
+    ],
+    "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+    ],
+    "background": {
+        "service_worker": "background/service-worker.js"
+    },
+    "content_scripts": [
+    {
+        "matches": ["http://*/*", "https://*/*"],
+        "js": ["utils/uid-generator.js", "content/dom-extractor.js", "content/content-script.js"],
+        "run_at": "document_idle",
+        "all_frames": true,
+        "match_about_blank": true
+    }
+    ],
+    "side_panel": {
+    "default_path": "sidebar/sidebar.html"
+    },
+    "action":{
+        "default_title": "Browser Agents"
+    },
+    "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+    }
+
+
+}
