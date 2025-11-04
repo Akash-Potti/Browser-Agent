@@ -17,44 +17,154 @@
       </div>
     </div>
 
-    <!-- Command Input Section -->
-    <div class="input-section">
-      <label for="commandInput">What would you like to do?</label>
-      <textarea 
-        id="commandInput" 
-        placeholder="e.g., Fill the login form with test credentials and click submit"
-        rows="3"
-      ></textarea>
-      
-      <div class="button-group">
-        <button id="executeBtn" class="btn btn-primary">
-          Execute Task
-        </button>
-        <button id="stopBtn" class="btn btn-secondary" disabled>
-          Stop
-        </button>
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+      <button class="tab-btn active" data-tab="automation">
+        🎯 Automation
+      </button>
+      <button class="tab-btn" data-tab="chat">
+        💬 Chat
+      </button>
+      <button class="tab-btn" data-tab="summary">
+        📋 Summary
+      </button>
+    </div>
+
+    <!-- Automation Tab -->
+    <div class="tab-content active" id="automation-tab">
+      <!-- Command Input Section -->
+      <div class="input-section">
+        <label for="commandInput">What would you like to do?</label>
+        <textarea 
+          id="commandInput" 
+          placeholder="e.g., Fill the login form with test credentials and click submit"
+          rows="3"
+        ></textarea>
+        
+        <div class="button-group">
+          <button id="executeBtn" class="btn btn-primary">
+            Execute Task
+          </button>
+          <button id="stopBtn" class="btn btn-secondary" disabled>
+            Stop
+          </button>
+        </div>
+      </div>
+
+      <!-- Status Display -->
+      <div class="status-section">
+        <h3>Current Status</h3>
+        <div id="currentStatus" class="status-message">
+          Waiting for command...
+        </div>
+        <div id="progressBar" class="progress-bar" style="display: none;">
+          <div class="progress-fill"></div>
+        </div>
+      </div>
+
+      <!-- Action History -->
+      <div class="history-section">
+        <div class="history-header">
+          <h3>Action History</h3>
+          <button id="clearHistoryBtn" class="btn-icon">Clear</button>
+        </div>
+        <div id="actionHistory" class="history-list">
+          <!-- Actions will be added here dynamically -->
+        </div>
       </div>
     </div>
 
-    <!-- Status Display -->
-    <div class="status-section">
-      <h3>Current Status</h3>
-      <div id="currentStatus" class="status-message">
-        Waiting for command...
-      </div>
-      <div id="progressBar" class="progress-bar" style="display: none;">
-        <div class="progress-fill"></div>
+<!-- Chat Tab -->
+    <div class="tab-content" id="chat-tab">
+      <div class="chat-container">
+        <div class="chat-header">
+          <div class="chat-header-content">
+            <h3>💬 AI Chat Assistant</h3>
+            <p class="chat-subtitle" id="chatSubtitle">Ask me anything about this page</p>
+          </div>
+          <div class="chat-header-actions">
+            <button id="startChatBtn" class="btn btn-small btn-primary">
+              🚀 Start Chat
+            </button>
+            <button id="exportChatBtn" class="btn btn-small btn-ghost" style="display: none;" title="Export chat history">
+              💾
+            </button>
+            <button id="clearChatBtn" class="btn btn-small btn-secondary" style="display: none;">
+              🗑️
+            </button>
+          </div>
+        </div>
+
+        <div id="chatMessages" class="chat-messages">
+          <div class="chat-welcome">
+            <div class="welcome-icon">🤖</div>
+            <h4>Welcome to AI Chat!</h4>
+            <p>I can help you understand and interact with this webpage.<br>Click "Start Chat" to begin a conversation.</p>
+            <div class="chat-features">
+              <div class="feature-card">
+                <span class="feature-icon">🔍</span>
+                <span class="feature-text">Content Analysis</span>
+              </div>
+              <div class="feature-card">
+                <span class="feature-icon">💡</span>
+                <span class="feature-text">Quick Answers</span>
+              </div>
+              <div class="feature-card">
+                <span class="feature-icon">📚</span>
+                <span class="feature-text">Deep Insights</span>
+              </div>
+            </div>
+            <div class="example-prompts">
+              <p class="example-title">Try asking:</p>
+              <button class="example-prompt" data-prompt="What is this page about?">
+                "What is this page about?"
+              </button>
+              <button class="example-prompt" data-prompt="Summarize the key points">
+                "Summarize the key points"
+              </button>
+              <button class="example-prompt" data-prompt="What actions can I perform here?">
+                "What actions can I perform here?"
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-input-container" style="display: none;">
+          <div class="chat-input-wrapper">
+            <textarea 
+              id="chatInput" 
+              placeholder="Message AI Assistant..."
+              rows="1"
+            ></textarea>
+            <div class="chat-input-actions">
+              <button id="sendChatBtn" class="btn-icon-primary">
+                📤 Send
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
+    <!-- Summary Tab -->
+    <div class="tab-content" id="summary-tab">
+      <div class="summary-container">
+        <div class="summary-header">
+          <h3>📋 Page Summary</h3>
+          <button id="summarizeBtn" class="btn btn-primary">
+            Summarize Page
+          </button>
+        </div>
 
-    <!-- Action History -->
-    <div class="history-section">
-      <div class="history-header">
-        <h3>Action History</h3>
-        <button id="clearHistoryBtn" class="btn-icon">Clear</button>
-      </div>
-      <div id="actionHistory" class="history-list">
-        <!-- Actions will be added here dynamically -->
+        <div id="summaryContent" class="summary-content">
+          <div class="summary-welcome">
+            <p>Click "Summarize Page" to get an AI-generated summary of the current webpage.</p>
+          </div>
+        </div>
+
+        <div id="summaryLoading" class="summary-loading" style="display: none;">
+          <div class="loading-spinner"></div>
+          <p>Analyzing page content...</p>
+        </div>
       </div>
     </div>
 
@@ -72,6 +182,9 @@
         </div>
         <div class="debug-item">
           <strong>Backend:</strong> <span id="backendStatus">Not connected</span>
+        </div>
+        <div class="debug-item">
+          <strong>Chat Session:</strong> <span id="chatSessionId">-</span>
         </div>
       </div>
     </div>

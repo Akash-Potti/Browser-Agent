@@ -21,7 +21,243 @@ class GeminiService:
         
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel('gemini-2.5-flash')
+        # Store chat sessions for each user/session
+        self.chat_sessions = {}
         logger.info("Gemini service initialized")
+    
+    def summarize_page_content(self, dom_data: dict, user_query: Optional[str] = None) -> dict:
+        """Summarize webpage content from DOM data"""
+        
+        # Extract text content from DOM elements
+        page_text = self._extract_text_from_dom(dom_data)
+        page_url = dom_data.get('url', 'unknown')
+        page_title = dom_data.get('title', 'unknown')
+        
+        prompt = f"""You are a helpful assistant that summarizes web page content.
+
+PAGE URL: {page_url}
+PAGE TITLE: {page_title}
+
+PAGE CONTENT:
+{page_text[:8000]}  # Limit to avoid token overflow
+
+TASK: Provide a comprehensive summary of this webpage.
+
+{"USER QUESTION: " + user_query if user_query else ""}
+
+Please provide:
+1. A brief overview (2-3 sentences)
+2. Main topics/sections covered
+3. Key points and important information
+4. Any notable features or functionality
+
+Return your response in JSON format:
+{{
+    "overview": "Brief 2-3 sentence overview",
+    "main_topics": ["topic1", "topic2", ...],
+    "key_points": ["point1", "point2", ...],
+    "detailed_summary": "More detailed paragraph summary",
+    "page_type": "e.g., article, product page, social media, dashboard, etc.",
+    "confidence": 0.0-1.0
+}}
+
+IMPORTANT: Only return valid JSON, no other text."""
+
+        try:
+            response = self.model.generate_content(prompt)
+            result = self._parse_json_response(response.text)
+            
+            logger.info(f"Page summarization complete for: {page_url}")
+            return {
+                'success': True,
+                'summary': result,
+                'url': page_url,
+                'title': page_title
+            }
+            
+        except Exception as e:
+            logger.error(f"Error summarizing page content: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'url': page_url,
+                'title': page_title
+            }
+    
+    def start_chat_session(self, session_id: str, context: dict) -> dict:
+        """Start a new chat session with page context"""
+        
+        page_text = self._extract_text_from_dom(context.get('dom_data', {}))
+        page_url = context.get('dom_data', {}).get('url', 'unknown')
+        page_title = context.get('dom_data', {}).get('title', 'unknown')
+        
+        system_instruction = f"""You are a helpful assistant that answers questions about web page content.
+
+CONTEXT:
+- Page URL: {page_url}
+- Page Title: {page_title}
+- Page Content (first 8000 chars):
+{page_text[:8000]}
+
+Your role:
+- Answer questions about the content on this page
+- Provide accurate information based on what you see
+- If information isn't available on the page, say so clearly
+- Be concise but thorough
+- Use a friendly, conversational tone"""
+
+        try:
+            # Create a new chat session with context
+            chat = self.model.start_chat(history=[])
+            
+            # Store the chat session
+            self.chat_sessions[session_id] = {
+                'chat': chat,
+                'context': context,
+                'history': []
+            }
+            
+            logger.info(f"Chat session started: {session_id}")
+            return {
+                'success': True,
+                'session_id': session_id,
+                'message': 'Chat session started. You can now ask questions about the page.'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error starting chat session: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def chat_query(self, session_id: str, user_message: str) -> dict:
+        """Handle a chat query in an existing session"""
+        
+        if session_id not in self.chat_sessions:
+            return {
+                'success': False,
+                'error': 'Chat session not found. Please start a new session.'
+            }
+        
+        session = self.chat_sessions[session_id]
+        chat = session['chat']
+        context = session['context']
+        
+        # Get page info for context
+        page_url = context.get('dom_data', {}).get('url', 'unknown')
+        page_text = self._extract_text_from_dom(context.get('dom_data', {}))
+        
+        # Enhanced prompt with page context
+        enhanced_message = f"""Based on the page content from {page_url}, answer this question:
+
+{user_message}
+
+Page context (if needed):
+{page_text[:4000]}
+
+Provide a clear, accurate answer based on the page content."""
+
+        try:
+            response = chat.send_message(enhanced_message)
+            response_text = response.text
+            
+            # Store in history
+            session['history'].append({
+                'user': user_message,
+                'assistant': response_text,
+                'timestamp': self._get_timestamp()
+            })
+            
+            logger.info(f"Chat query processed for session: {session_id}")
+            return {
+                'success': True,
+                'response': response_text,
+                'session_id': session_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing chat query: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def get_chat_history(self, session_id: str) -> dict:
+        """Get chat history for a session"""
+        
+        if session_id not in self.chat_sessions:
+            return {
+                'success': False,
+                'error': 'Chat session not found'
+            }
+        
+        history = self.chat_sessions[session_id]['history']
+        return {
+            'success': True,
+            'history': history
+        }
+    
+    def clear_chat_session(self, session_id: str) -> dict:
+        """Clear a chat session"""
+        
+        if session_id in self.chat_sessions:
+            del self.chat_sessions[session_id]
+            return {
+                'success': True,
+                'message': 'Chat session cleared'
+            }
+        
+        return {
+            'success': False,
+            'error': 'Chat session not found'
+        }
+    
+    def _extract_text_from_dom(self, dom_data: dict) -> str:
+        """Extract readable text from DOM elements"""
+        
+        if not isinstance(dom_data, dict):
+            return ""
+        
+        elements = dom_data.get('elements', [])
+        text_parts = []
+        
+        # Collect text from various element types
+        for elem in elements:
+            # Get text content
+            text = elem.get('text', '').strip()
+            if text and len(text) > 3:  # Ignore very short text
+                text_parts.append(text)
+            
+            # Get accessible names and labels
+            accessible_name = elem.get('accessibleName', '').strip()
+            if accessible_name and len(accessible_name) > 3:
+                text_parts.append(accessible_name)
+            
+            # Get placeholder text
+            attributes = elem.get('attributes', {})
+            placeholder = attributes.get('placeholder', '').strip()
+            if placeholder and len(placeholder) > 3:
+                text_parts.append(f"[Placeholder: {placeholder}]")
+        
+        # Remove duplicates while preserving order
+        unique_text = []
+        seen = set()
+        for text in text_parts:
+            normalized = text.lower()
+            if normalized not in seen:
+                seen.add(normalized)
+                unique_text.append(text)
+        
+        # Join with newlines for better readability
+        return '\n'.join(unique_text[:500])  # Limit to first 500 unique text pieces
+    
+    def _get_timestamp(self) -> str:
+        """Get current timestamp"""
+        from datetime import datetime
+        return datetime.now().isoformat()
+    
+    # ... (keep all existing methods from the original GeminiService class)
     
     def analyze_dom(self, dom_data: dict, user_goal: str) -> dict:
         """Analyze DOM and create initial action plan"""
@@ -82,7 +318,6 @@ AUTOCOMPLETE GUIDELINES:
         except Exception as e:
             logger.error(f"Error analyzing DOM with Gemini: {e}")
             return self._fallback_analysis()
-    
     def get_next_action(self, session: dict, dom_data: dict, previous_result: Optional[dict] = None) -> dict:
         """Get next action based on current state"""
         
@@ -237,10 +472,10 @@ IMPORTANT RULES:
 10. Do NOT click the same element more than once in a row. If the last click didn't reveal a new field, try wait_for_selector or choose a different element.
 11. If no perfect match exists, choose the best available element rather than returning null.
 12. AUTOCOMPLETE FLOW: After a successful TYPE action on a combobox/autocomplete field, if you see options appeared in the previous result, use "select_autocomplete" (NO target_uid needed) with the desired option text as value.
-13. ⚠️ AFTER NAVIGATION: If the previous action was a navigation and you see elements from the new page, you can proceed immediately. The page has already loaded.
-14. 🔑 SENDING MESSAGES: After typing a message, look for a "Send" button to click. DO NOT use "press" action with Enter key - modern messaging apps (WhatsApp, Slack, Discord, etc.) require clicking the Send button. Only use "press" for special keys in specific contexts (like Escape to close dialogs).
-15. 📨 CRITICAL - MESSAGING APPS: Typing text into a message input field does NOT send the message! You MUST find and click the Send button after typing. Common send button indicators: text like "Send", "Post", "Submit", icons like ➤ ▶ 📤, aria-label="Send", data-testid contains "send" or "submit". The task is NOT complete until the send button is clicked and the message appears in the conversation thread.
-16. 🔓 DISABLED BUTTONS: Send/Submit buttons are often DISABLED until text is entered. After a successful TYPE action, the send button may become ENABLED. Look for buttons with state.disabled=false or interaction.isDisabled=false after typing. The button that was disabled in previous DOM may now be enabled in the current DOM. Don't skip clicking send just because you saw it was disabled before typing."""
+13. AFTER NAVIGATION: If the previous action was a navigation and you see elements from the new page, you can proceed immediately. The page has already loaded.
+14. SENDING MESSAGES: After typing a message, look for a "Send" button to click. DO NOT use "press" action with Enter key - modern messaging apps (WhatsApp, Slack, Discord, etc.) require clicking the Send button. Only use "press" for special keys in specific contexts (like Escape to close dialogs).
+15. CRITICAL - MESSAGING APPS: Typing text into a message input field does NOT send the message! You MUST find and click the Send button after typing. Common send button indicators: text like "Send", "Post", "Submit", icons like ➤ ▶ 📤, aria-label="Send", data-testid contains "send" or "submit". The task is NOT complete until the send button is clicked and the message appears in the conversation thread.
+16. DISABLED BUTTONS: Send/Submit buttons are often DISABLED until text is entered. After a successful TYPE action, the send button may become ENABLED. Look for buttons with state.disabled=false or interaction.isDisabled=false after typing. The button that was disabled in previous DOM may now be enabled in the current DOM. Don't skip clicking send just because you saw it was disabled before typing."""
 
         try:
             response = self.model.generate_content(prompt)
@@ -343,7 +578,7 @@ IMPORTANT: Only return valid JSON, no other text."""
             if aria_label or title:
                 score += 2
             if data_test:
-                score += 3  # data-testid is a strong signal (Twitter, React apps)
+                score += 3
             if text:
                 score += min(len(text) / 20.0, 4)
 
@@ -356,7 +591,7 @@ IMPORTANT: Only return valid JSON, no other text."""
                         (title or '').lower(),
                         (placeholder or '').lower(),
                         (classes or '').lower(),
-                        (data_test or '').lower(),  # Include testid in searchable text
+                        (data_test or '').lower(),
                     ],
                 )
             )
@@ -365,17 +600,15 @@ IMPORTANT: Only return valid JSON, no other text."""
                 keyword_hits = sum(1 for kw in keywords if kw in aggregate_text)
                 score += keyword_hits * 3
             
-            # Boost score for send/submit buttons (important for messaging)
             if any(term in aggregate_text for term in ['send', 'submit', 'post', 'reply', 'message']):
                 if tag == 'button' or role == 'button':
-                    score += 5  # Prioritize send buttons
+                    score += 5
 
             bounds = elem.get('bounds') or {}
             top = bounds.get('top')
             if isinstance(top, (int, float)):
                 score += max(0.0, 4 - (top / 250.0))
             
-            # Get disabled state from element
             state = elem.get('state', {}) or {}
             interaction = elem.get('interaction', {}) or {}
             is_disabled = state.get('disabled', False) or interaction.get('isDisabled', False)
@@ -393,7 +626,7 @@ IMPORTANT: Only return valid JSON, no other text."""
                 'dataTestId': data_test,
                 'class': (classes[:140] + '…') if classes and len(classes) > 140 else classes,
                 'inViewport': elem.get('isInViewport'),
-                'disabled': is_disabled,  # Include disabled state
+                'disabled': is_disabled,
                 'score': round(score, 2),
                 'index': index,
                 'bounds': {
@@ -414,7 +647,6 @@ IMPORTANT: Only return valid JSON, no other text."""
         )
 
         return simplified_sorted[:80]
-    
     def _summarize_history(self, action_history: list) -> str:
         """Summarize action history for prompt"""
         if not action_history:
@@ -442,7 +674,7 @@ IMPORTANT: Only return valid JSON, no other text."""
             summary_lines.append(line)
 
         return "\n".join(summary_lines)
-
+    
     def _extract_goal_keywords(self, user_goal: Optional[str]) -> List[str]:
         if not user_goal:
             return []
@@ -461,7 +693,6 @@ IMPORTANT: Only return valid JSON, no other text."""
         """Parse JSON from Gemini response, handling markdown code blocks"""
         text = text.strip()
 
-        # Remove markdown code blocks if present
         if text.startswith('```'):
             parts = text.split('```')
             if len(parts) >= 2:
@@ -470,13 +701,11 @@ IMPORTANT: Only return valid JSON, no other text."""
                     text = text[4:]
         text = text.strip()
 
-        # Try direct parse first
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
-        # Salvage: extract the largest JSON object block from the text
         try:
             start = text.find('{')
             end = text.rfind('}')
@@ -486,7 +715,6 @@ IMPORTANT: Only return valid JSON, no other text."""
         except Exception:
             pass
 
-        # As last resort, try to find a JSON object with a next_action/complete key
         try:
             match = re.search(r"\{[\s\S]*?\}\s*$", text)
             if match:
@@ -494,7 +722,6 @@ IMPORTANT: Only return valid JSON, no other text."""
         except Exception:
             pass
 
-        # If still not JSON, raise with the original content for caller to handle
         logger.error("Failed to parse JSON from Gemini response")
         logger.error(f"Response text: {text}")
         raise json.JSONDecodeError("Invalid JSON from model", text, 0)
@@ -509,7 +736,7 @@ IMPORTANT: Only return valid JSON, no other text."""
             'confidence': 0.0,
             'error': 'Gemini API error'
         }
-    
+        
     def _fallback_next_action(self) -> dict:
         """Fallback for next action"""
         return {

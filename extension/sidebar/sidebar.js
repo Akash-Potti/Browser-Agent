@@ -7,14 +7,19 @@ const BACKEND_URL = "http://localhost:5000";
 const state = {
   isExecuting: false,
   sessionId: null,
+  chatSessionId: null,
   currentTabId: null,
   actionHistory: [],
+  chatHistory: [],
   backendConnected: false,
   stopRequested: false,
+  currentTab: 'automation',
+  currentDomData: null,
 };
 
 // DOM elements
 const elements = {
+// Existing automation elements
   commandInput: document.getElementById("commandInput"),
   executeBtn: document.getElementById("executeBtn"),
   stopBtn: document.getElementById("stopBtn"),
@@ -24,11 +29,33 @@ const elements = {
   progressBar: document.getElementById("progressBar"),
   actionHistory: document.getElementById("actionHistory"),
   clearHistoryBtn: document.getElementById("clearHistoryBtn"),
+  
+  // Tab navigation
+  tabBtns: document.querySelectorAll(".tab-btn"),
+  automationTab: document.getElementById("automation-tab"),
+  chatTab: document.getElementById("chat-tab"),
+  summaryTab: document.getElementById("summary-tab"),
+  
+  // Chat elements
+  startChatBtn: document.getElementById("startChatBtn"),
+  clearChatBtn: document.getElementById("clearChatBtn"),
+  chatMessages: document.getElementById("chatMessages"),
+  chatInput: document.getElementById("chatInput"),
+  sendChatBtn: document.getElementById("sendChatBtn"),
+  chatInputContainer: document.querySelector(".chat-input-container"),
+  
+  // Summary elements
+  summarizeBtn: document.getElementById("summarizeBtn"),
+  summaryContent: document.getElementById("summaryContent"),
+  summaryLoading: document.getElementById("summaryLoading"),
+  
+  // Debug elements
   debugToggle: document.getElementById("debugToggle"),
   debugContent: document.getElementById("debugContent"),
   sessionIdDisplay: document.getElementById("sessionId"),
   tabIdDisplay: document.getElementById("tabId"),
   backendStatus: document.getElementById("backendStatus"),
+  chatSessionIdDisplay: document.getElementById("chatSessionId"),
 };
 
 // Initialize
@@ -42,7 +69,7 @@ async function init() {
   elements.stopBtn.addEventListener("click", handleStop);
   elements.clearHistoryBtn.addEventListener("click", clearHistory);
   elements.debugToggle.addEventListener("click", toggleDebug);
-
+setupEventListeners();
   // Get current tab info
   await getCurrentTab();
 
@@ -77,8 +104,395 @@ async function init() {
   // Update UI
   updateStatus("Ready", "idle");
 }
+function setupEventListeners() {
+  // Automation tab
+  elements.executeBtn.addEventListener("click", handleExecute);
+  elements.stopBtn.addEventListener("click", handleStop);
+  elements.clearHistoryBtn.addEventListener("click", clearHistory);
+  
+  // Tab navigation
+  elements.tabBtns.forEach(btn => {
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  });
+  
+  // Chat tab
+  elements.startChatBtn.addEventListener("click", handleStartChat);
+  elements.clearChatBtn.addEventListener("click", handleClearChat);
+  elements.sendChatBtn.addEventListener("click", handleSendChat);
+  elements.exportChatBtn?.addEventListener("click", handleExportChat);
+  
+  elements.chatInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSendChat();
+    }
+  });
+  
+  // Auto-resize textarea
+  elements.chatInput.addEventListener("input", () => {
+    elements.chatInput.style.height = "auto";
+    elements.chatInput.style.height = Math.min(elements.chatInput.scrollHeight, 120) + "px";
+  });
+  
+  // Example prompts
+  elements.chatMessages.addEventListener("click", (e) => {
+    if (e.target.classList.contains("example-prompt")) {
+      const prompt = e.target.dataset.prompt;
+      if (state.chatSessionId) {
+        elements.chatInput.value = prompt;
+        elements.chatInput.focus();
+      }
+    }
+  });
+  
+  // Summary tab
+  elements.summarizeBtn.addEventListener("click", handleSummarize);
+  elements.copySummaryBtn?.addEventListener("click", handleCopySummary);
+  elements.exportSummaryBtn?.addEventListener("click", handleExportSummary);
+  
+  // Debug toggle
+  elements.debugToggle.addEventListener("click", toggleDebug);
+  
+  // Listen for messages from background
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || !message.type) return;
+    if (message.type === "TAB_CHANGED") {
+      state.currentTabId = message.tabId;
+      elements.tabIdDisplay.textContent = message.tabId;
+    } else if (message.type === "TAB_UPDATED") {
+      if (message.tabId === state.currentTabId && message.url) {
+        try {
+          const hostname = new URL(message.url).hostname;
+          elements.backendStatus.textContent = state.backendConnected
+            ? `Connected ✓ (${hostname})`
+            : `Disconnected ✗ (${hostname})`;
+        } catch (_) {}
+      }
+    }
+  });
+}
 
-// Check if backend is running
+// ============== TAB SWITCHING ==============
+
+// ============== TAB SWITCHING ==============
+
+function switchTab(tabName) {
+  state.currentTab = tabName;
+  
+  // Update tab buttons
+  elements.tabBtns.forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName);
+  });
+  
+  // Update tab content
+  const tabs = {
+    'automation': elements.automationTab,
+    'chat': elements.chatTab,
+    'summary': elements.summaryTab,
+  };
+  
+  Object.entries(tabs).forEach(([name, element]) => {
+    element.classList.toggle('active', name === tabName);
+  });
+  
+  // Auto-capture DOM when switching to chat or summary tabs
+  if ((tabName === 'chat' || tabName === 'summary') && !state.currentDomData) {
+    captureDOMForAnalysis();
+  }
+}
+
+// ============== CHAT FUNCTIONALITY ==============
+
+async function handleStartChat() {
+  try {
+    elements.startChatBtn.disabled = true;
+    elements.startChatBtn.textContent = "Starting...";
+    
+    // Capture DOM if not already captured
+    if (!state.currentDomData) {
+      await captureDOMForAnalysis();
+    }
+    
+    if (!state.currentDomData) {
+      throw new Error("Failed to capture page content");
+    }
+    
+    // Generate chat session ID
+    state.chatSessionId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    elements.chatSessionIdDisplay.textContent = state.chatSessionId;
+    
+    // Start chat session with backend
+    const response = await fetch(`${BACKEND_URL}/chat/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: state.chatSessionId,
+        dom_data: state.currentDomData,
+      }),
+    });
+    
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(result.error || "Failed to start chat");
+    }
+    
+    // Clear welcome message and show chat interface
+    elements.chatMessages.innerHTML = "";
+    elements.chatInputContainer.style.display = "flex";
+    elements.startChatBtn.style.display = "none";
+    elements.clearChatBtn.style.display = "block";
+    
+    // Add welcome message
+    addChatMessage("assistant", "Hi! I'm ready to answer questions about this page. What would you like to know?");
+    
+  } catch (error) {
+    console.error("Error starting chat:", error);
+    alert(`Failed to start chat: ${error.message}`);
+    elements.startChatBtn.textContent = "Start Chat";
+    elements.startChatBtn.disabled = false;
+  }
+}
+
+async function handleSendChat() {
+  const message = elements.chatInput.value.trim();
+  
+  if (!message) return;
+  
+  if (!state.chatSessionId) {
+    alert("Please start a chat session first");
+    return;
+  }
+  
+  // Add user message to UI
+  addChatMessage("user", message);
+  elements.chatInput.value = "";
+  elements.sendChatBtn.disabled = true;
+  
+  // Add typing indicator
+  const typingId = addChatMessage("assistant", "...", true);
+  
+  try {
+    // Send message to backend
+    const response = await fetch(`${BACKEND_URL}/chat/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: state.chatSessionId,
+        message: message,
+      }),
+    });
+    
+    const result = await response.json();
+    
+    // Remove typing indicator
+    document.getElementById(typingId)?.remove();
+    
+    if (!result.success) {
+      throw new Error(result.error || "Failed to get response");
+    }
+    
+    // Add assistant response
+    addChatMessage("assistant", result.response);
+    
+  } catch (error) {
+    console.error("Error sending chat message:", error);
+    document.getElementById(typingId)?.remove();
+    addChatMessage("assistant", `Sorry, I encountered an error: ${error.message}`);
+  } finally {
+    elements.sendChatBtn.disabled = false;
+  }
+}
+
+function handleClearChat() {
+  if (!confirm("Clear chat history?")) return;
+  
+  if (state.chatSessionId) {
+    // Clear session on backend
+    fetch(`${BACKEND_URL}/chat/clear/${state.chatSessionId}`, {
+      method: "DELETE",
+    }).catch(console.error);
+  }
+  
+  // Reset UI
+  state.chatSessionId = null;
+  elements.chatSessionIdDisplay.textContent = "-";
+  elements.chatMessages.innerHTML = `
+    <div class="chat-welcome">
+      <p>👋 Click "Start Chat" to begin asking questions about this page.</p>
+      <p class="chat-help">You can ask things like:</p>
+      <ul class="chat-examples">
+        <li>"What is this page about?"</li>
+        <li>"Summarize the main content"</li>
+        <li>"What are the key features?"</li>
+        <li>"Tell me about [specific topic]"</li>
+      </ul>
+    </div>
+  `;
+  elements.chatInputContainer.style.display = "none";
+  elements.startChatBtn.style.display = "block";
+  elements.clearChatBtn.style.display = "none";
+  elements.startChatBtn.disabled = false;
+  elements.startChatBtn.textContent = "Start Chat";
+}
+
+function addChatMessage(role, content, isTyping = false) {
+  const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const emoji = role === "user" ? "👤" : "🤖";
+  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  
+  const messageEl = document.createElement("div");
+  messageEl.className = `chat-message ${role}`;
+  messageEl.id = messageId;
+  messageEl.innerHTML = `
+    <div class="chat-message-avatar">${emoji}</div>
+    <div class="chat-message-content">
+      ${content}
+      ${!isTyping ? `<div class="chat-message-time">${time}</div>` : ''}
+    </div>
+  `;
+  
+  elements.chatMessages.appendChild(messageEl);
+  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  
+  return messageId;
+}
+
+// ============== SUMMARY FUNCTIONALITY ==============
+
+async function handleSummarize() {
+  try {
+    elements.summarizeBtn.disabled = true;
+    elements.summaryLoading.style.display = "flex";
+    elements.summaryContent.style.display = "none";
+    
+    // Capture DOM if not already captured
+    if (!state.currentDomData) {
+      await captureDOMForAnalysis();
+    }
+    
+    if (!state.currentDomData) {
+      throw new Error("Failed to capture page content");
+    }
+    
+    // Request summary from backend
+    const response = await fetch(`${BACKEND_URL}/summarize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dom_data: state.currentDomData,
+      }),
+    });
+    
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(result.error || "Failed to generate summary");
+    }
+    
+    // Display summary
+    displaySummary(result.summary, result.url, result.title);
+    
+  } catch (error) {
+    console.error("Error generating summary:", error);
+    elements.summaryContent.innerHTML = `
+      <div class="summary-section">
+        <h4>❌ Error</h4>
+        <p>${error.message}</p>
+      </div>
+    `;
+    elements.summaryContent.style.display = "block";
+  } finally {
+    elements.summarizeBtn.disabled = false;
+    elements.summaryLoading.style.display = "none";
+  }
+}
+
+function displaySummary(summary, url, title) {
+  const confidence = summary.confidence || 0;
+  const confidencePercent = Math.round(confidence * 100);
+  
+  let html = `
+    <div class="summary-section">
+      <h4>📄 Page Information</h4>
+      <p><strong>Title:</strong> ${escapeHtml(title)}</p>
+      <p><strong>URL:</strong> ${escapeHtml(url)}</p>
+      <div class="summary-meta">
+        <div class="summary-meta-item">
+          <strong>Type:</strong> <span class="summary-badge">${escapeHtml(summary.page_type || 'Unknown')}</span>
+        </div>
+        <div class="summary-meta-item">
+          <strong>Confidence:</strong> <span class="summary-badge">${confidencePercent}%</span>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  if (summary.overview) {
+    html += `
+      <div class="summary-section">
+        <h4>📋 Overview</h4>
+        <p>${escapeHtml(summary.overview)}</p>
+      </div>
+    `;
+  }
+  
+  if (summary.main_topics && summary.main_topics.length > 0) {
+    html += `
+      <div class="summary-section">
+        <h4>🏷️ Main Topics</h4>
+        <ul>
+          ${summary.main_topics.map(topic => `<li>${escapeHtml(topic)}</li>`).join('')}
+        </ul>
+      </div>
+    `;
+  }
+  
+  if (summary.key_points && summary.key_points.length > 0) {
+    html += `
+      <div class="summary-section">
+        <h4>💡 Key Points</h4>
+        <ul>
+          ${summary.key_points.map(point => `<li>${escapeHtml(point)}</li>`).join('')}
+        </ul>
+      </div>
+    `;
+  }
+  
+  if (summary.detailed_summary) {
+    html += `
+      <div class="summary-section">
+        <h4>📝 Detailed Summary</h4>
+        <p>${escapeHtml(summary.detailed_summary)}</p>
+      </div>
+    `;
+  }
+  
+  elements.summaryContent.innerHTML = html;
+  elements.summaryContent.style.display = "block";
+}
+
+// ============== DOM CAPTURE FOR ANALYSIS ==============
+
+async function captureDOMForAnalysis() {
+  try {
+    const response = await sendMessageToContentScript({
+      type: "CAPTURE_DOM",
+      sessionId: state.sessionId || `temp_${Date.now()}`,
+    });
+    
+    if (response.success && response.data) {
+      state.currentDomData = response.data;
+      console.log("DOM captured for analysis:", response.statistics);
+      return response.data;
+    } else {
+      throw new Error(response.error || "Failed to capture DOM");
+    }
+  } catch (error) {
+    console.error("Error capturing DOM for analysis:", error);
+    return null;
+  }
+}
 async function checkBackendConnection() {
   try {
     const response = await fetch(`${BACKEND_URL}/health`);
@@ -86,7 +500,6 @@ async function checkBackendConnection() {
       state.backendConnected = true;
       elements.backendStatus.textContent = "Connected ✓";
       elements.backendStatus.style.color = "#22c55e";
-      console.log("Backend connected");
     } else {
       throw new Error("Backend unhealthy");
     }
@@ -94,11 +507,8 @@ async function checkBackendConnection() {
     state.backendConnected = false;
     elements.backendStatus.textContent = "Disconnected ✗";
     elements.backendStatus.style.color = "#ef4444";
-    console.error("Backend not connected:", error);
   }
 }
-
-// Get current active tab
 async function getCurrentTab() {
   try {
     const [tab] = await chrome.tabs.query({
@@ -108,9 +518,7 @@ async function getCurrentTab() {
     if (tab) {
       state.currentTabId = tab.id;
       elements.tabIdDisplay.textContent = tab.id;
-      console.log("Current tab:", tab.id, tab.url);
-
-      // Update backend status display with tab URL
+      
       if (tab.url) {
         const hostname = new URL(tab.url).hostname;
         elements.backendStatus.textContent = state.backendConnected
@@ -123,7 +531,6 @@ async function getCurrentTab() {
     updateStatus("Could not access current tab", "error");
   }
 }
-
 // Handle execute button click
 async function handleExecute() {
   const command = elements.commandInput.value.trim();
@@ -319,26 +726,6 @@ async function sendMessageToContentScript(message, frameId) {
     throw new Error("No active tab available");
   }
 
-  // Guard against unsupported pages (e.g., chrome://, chrome web store, PDFs)
-  try {
-    const tab = await chrome.tabs.get(state.currentTabId);
-    const url = tab?.url || "";
-    if (!isUrlSupportedForContentScripts(url)) {
-      throw new Error(
-        "This page doesn't allow content scripts (e.g., chrome://, Chrome Web Store, or PDF). Open a regular website and try again."
-      );
-    }
-  } catch (e) {
-    if (e && e.message && e.message.startsWith("This page doesn't allow")) {
-      // Re-throw friendly error
-      throw e;
-    }
-    // If tabs.get fails, surface a clear error
-    throw new Error(
-      "Unable to access the current tab. Please switch to a normal webpage."
-    );
-  }
-
   const attempt = () =>
     new Promise((resolve, reject) => {
       const options = typeof frameId === "number" ? { frameId } : undefined;
@@ -363,18 +750,7 @@ async function sendMessageToContentScript(message, frameId) {
       "Could not establish connection. Receiving end does not exist.";
 
     if (error.message && error.message.includes(missingReceiverMessage)) {
-      console.warn(
-        "Content script missing on tab",
-        state.currentTabId,
-        "Attempting reinjection."
-      );
-      addToHistory(
-        "info",
-        `Content script not detected on tab ${state.currentTabId}. Attempting reinjection...`
-      );
-
       await injectContentScripts();
-      // Give the scripts a brief moment to initialize
       await delay(150);
       return await attempt();
     }
@@ -397,24 +773,12 @@ async function injectContentScripts() {
         "content/content-script.js",
       ],
     });
-    addToHistory("success", "Content scripts injected successfully");
   } catch (error) {
     console.error("Failed to inject content scripts:", error);
-    const msg = String(error?.message || "").toLowerCase();
-    if (
-      msg.includes("cannot access contents of url") ||
-      msg.includes("the extensions gallery cannot be scripted") ||
-      msg.includes("chrome://") ||
-      msg.includes("edge://") ||
-      msg.includes("moz-extension://")
-    ) {
-      throw new Error(
-        "Cannot inject scripts into this page (e.g., chrome://, Chrome Web Store, or PDF). Navigate to a regular http(s) webpage and try again."
-      );
-    }
-    throw error;
+    throw new Error("Cannot inject scripts into this page");
   }
 }
+
 
 // Send DOM to backend for analysis
 async function sendDOMToBackend(domData) {
@@ -922,7 +1286,6 @@ function updateStatus(message, type = "idle") {
   elements.statusText.textContent =
     type.charAt(0).toUpperCase() + type.slice(1);
 
-  // Update status badge color
   const dot = elements.statusBadge.querySelector(".status-dot");
   switch (type) {
     case "executing":
@@ -939,7 +1302,6 @@ function updateStatus(message, type = "idle") {
       dot.style.background = "#4ade80";
   }
 }
-
 // Show/hide progress bar
 function showProgress(show) {
   elements.progressBar.style.display = show ? "block" : "none";
@@ -1068,6 +1430,15 @@ function toggleDebug() {
     : "Hide Debug Info ▲";
 }
 
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
 // Reset UI after execution
 function resetUI() {
   state.isExecuting = false;

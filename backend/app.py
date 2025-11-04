@@ -29,7 +29,133 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'service': 'Browser Automation Backend'
     })
+# ============== SUMMARIZATION & CHAT ROUTES ==============
 
+@app.route('/summarize', methods=['POST'])
+def summarize_page():
+    """Summarize webpage content"""
+    try:
+        data = request.json
+        dom_data = data.get('dom_data')
+        user_query = data.get('query')  # Optional query for focused summary
+        
+        if not dom_data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing dom_data in request'
+            }), 400
+        
+        result = gemini_service.summarize_page_content(dom_data, user_query)
+        
+        if result.get('success'):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        logger.error(f"Error in summarize_page: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/chat/start', methods=['POST'])
+def start_chat():
+    """Start a new chat session with page context"""
+    try:
+        data = request.json
+        session_id = data.get('session_id')
+        dom_data = data.get('dom_data')
+        
+        if not session_id or not dom_data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing session_id or dom_data'
+            }), 400
+        
+        context = {
+            'dom_data': dom_data,
+            'url': dom_data.get('url'),
+            'title': dom_data.get('title')
+        }
+        
+        result = gemini_service.start_chat_session(session_id, context)
+        
+        if result.get('success'):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        logger.error(f"Error in start_chat: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/chat/query', methods=['POST'])
+def chat_query():
+    """Handle a chat query"""
+    try:
+        data = request.json
+        session_id = data.get('session_id')
+        message = data.get('message')
+        
+        if not session_id or not message:
+            return jsonify({
+                'success': False,
+                'error': 'Missing session_id or message'
+            }), 400
+        
+        result = gemini_service.chat_query(session_id, message)
+        
+        if result.get('success'):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        logger.error(f"Error in chat_query: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/chat/history/<session_id>', methods=['GET'])
+def get_chat_history(session_id):
+    """Get chat history for a session"""
+    try:
+        result = gemini_service.get_chat_history(session_id)
+        
+        if result.get('success'):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 404
+            
+    except Exception as e:
+        logger.error(f"Error in get_chat_history: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/chat/clear/<session_id>', methods=['DELETE'])
+def clear_chat(session_id):
+    """Clear a chat session"""
+    try:
+        result = gemini_service.clear_chat_session(session_id)
+        
+        if result.get('success'):
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 404
+            
+    except Exception as e:
+        logger.error(f"Error in clear_chat: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 @app.route('/session/start', methods=['POST'])
 def start_session():
     """Create a new automation session"""
