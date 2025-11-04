@@ -170,11 +170,11 @@ async function executeAction(action) {
       }
 
       focusElement(element);
-      element.click();
+      const clicked = clickElement(element);
       return {
         ...baseResult,
-        success: true,
-        message: "Clicked element",
+        success: clicked,
+        message: clicked ? "Clicked element" : "Click dispatched (uncertain)",
       };
 
     case "type":
@@ -192,14 +192,45 @@ async function executeAction(action) {
         }
       }
 
-      const value = typeof action.value === "string" ? action.value : "";
-      focusElement(element);
-      setElementValue(element, value);
-      return {
-        ...baseResult,
-        success: true,
-        message: `Entered text (${value.length} chars)`,
-      };
+      {
+        const value = typeof action.value === "string" ? action.value : "";
+        
+        // Special handling for autocomplete/combobox elements
+        const role = element.getAttribute?.("role");
+        const hasAutocomplete = element.hasAttribute?.("aria-autocomplete") || 
+                                element.hasAttribute?.("autocomplete") ||
+                                role === "combobox" ||
+                                role === "searchbox";
+        
+        if (hasAutocomplete) {
+          // For autocomplete fields, we need to trigger the dropdown first
+          focusElement(element);
+          await sleep(100); // Let autocomplete initialize
+          
+          // Some autocomplete fields need a click to open
+          const ariaExpanded = element.getAttribute?.("aria-expanded");
+          if (ariaExpanded === "false") {
+            element.click();
+            await sleep(150);
+          }
+        }
+        
+        focusElement(element);
+        const { ok, mode, targetUsed, detail } = typeIntoElement(element, value);
+        
+        // For autocomplete, give time for suggestions to appear
+        if (hasAutocomplete && ok) {
+          await sleep(200);
+        }
+        
+        return {
+          ...baseResult,
+          success: ok,
+          message: ok
+            ? `Entered text (${value.length} chars) via ${mode}${targetUsed ? ` -> ${targetUsed}` : ""}${hasAutocomplete ? " [autocomplete]" : ""}`
+            : detail || "Failed to enter text",
+        };
+      }
 
     case "scroll":
       if (element) {
@@ -252,8 +283,28 @@ async function executeAction(action) {
 
     case "press": {
       const key = (action.key || action.value || "Enter").toString();
-      const target = element || document.activeElement || document.body;
+      
+      // If a specific element is targeted, focus it first
+      let target = element;
+      
+      if (!target) {
+        // No specific target, use activeElement or body
+        target = document.activeElement || document.body;
+      } else {
+        // We have a target element, ensure it's focused
+        try {
+          if (typeof target.focus === 'function') {
+            target.focus();
+            // Wait a bit for focus to settle
+            await sleep(50);
+          }
+        } catch (e) {
+          console.warn('Could not focus target for key press:', e);
+        }
+      }
+      
       keyPress(target, key);
+      
       return {
         ...baseResult,
         success: true,
@@ -262,6 +313,37 @@ async function executeAction(action) {
     }
 
     case "select":
+    case "select_autocomplete":
+      // For select_autocomplete, prioritize global search over specific element
+      if (actionType === "select_autocomplete" || !element) {
+        // Try to find visible autocomplete dropdown
+        const autocompleteOption = findAutocompleteOption(action.value);
+        if (autocompleteOption) {
+          try {
+            autocompleteOption.scrollIntoView({ block: "nearest" });
+          } catch (_) {}
+          clickElement(autocompleteOption);
+          await sleep(150);
+          return {
+            ...baseResult,
+            success: true,
+            message: `Selected autocomplete: ${normalizeText(
+              autocompleteOption.textContent || autocompleteOption.innerText
+            )}`,
+          };
+        }
+        
+        // If select_autocomplete fails to find option, that's an error
+        if (actionType === "select_autocomplete") {
+          return {
+            ...baseResult,
+            success: false,
+            error: `Autocomplete option not found: ${action.value}`,
+          };
+        }
+      }
+      
+      // Standard select element
       if (element && element.tagName.toLowerCase() === "select") {
         const option = selectOption(element, action.value);
         if (!option) {
@@ -277,21 +359,16 @@ async function executeAction(action) {
           message: `Selected option: ${option.text}`,
         };
       }
-      // Custom dropdown: try clicking trigger then selecting role=option
-      if (!element) {
-        return {
-          ...baseResult,
-          success: false,
-          error: "Target element for select not found",
-        };
-      }
-      try {
-        focusElement(element);
-        dispatchMouseEvents(element, ["mouseover", "mousemove"]);
-        element.click();
-      } catch (_) {}
-      await sleep(150);
-      {
+      
+      // Custom dropdown with trigger element
+      if (element) {
+        try {
+          focusElement(element);
+          dispatchMouseEvents(element, ["mouseover", "mousemove"]);
+          element.click();
+        } catch (_) {}
+        await sleep(150);
+        
         const opt = findCustomDropdownOption(action.value, element);
         if (!opt) {
           return {
@@ -303,7 +380,7 @@ async function executeAction(action) {
         try {
           opt.scrollIntoView({ block: "nearest" });
         } catch (_) {}
-        opt.click();
+        clickElement(opt);
         return {
           ...baseResult,
           success: true,
@@ -312,6 +389,12 @@ async function executeAction(action) {
           )}`,
         };
       }
+      
+      return {
+        ...baseResult,
+        success: false,
+        error: "No select target or autocomplete option found",
+      };
 
     case "check":
     case "uncheck":
@@ -392,40 +475,75 @@ function getElementByUIDSafe(uid) {
   return null;
 }
 
-async function resolveElementWithRetry(uid, retryDelay = 50) {
+async function resolveElementWithRetry(uid, maxRetries = 10, retryDelay = 100) {
   try {
+    // First attempt - check if element already exists
     let el = getElementByUIDSafe(uid);
     if (el) return el;
-    // Refresh UID registry by capturing DOM; this may re-register the same UID
-    try {
-      captureDOM();
-    } catch (e) {
-      // ignore capture errors here; a retry may still find the element
+    
+    // Retry with progressive delay for dynamic content (SPAs, lazy loading, etc.)
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      // Refresh UID registry by capturing DOM; this may re-register the same UID
+      try {
+        captureDOM();
+      } catch (e) {
+        // ignore capture errors here; a retry may still find the element
+      }
+      
+      // Check if element appeared after DOM refresh
+      el = getElementByUIDSafe(uid);
+      if (el) {
+        console.log(`Element found after ${attempt + 1} retries`);
+        return el;
+      }
+      
+      // Progressive backoff: 100ms, 100ms, 200ms, 200ms, 300ms, 300ms...
+      const delay = retryDelay * (1 + Math.floor(attempt / 2));
+      await sleep(delay);
     }
-    await sleep(retryDelay);
+    
+    // Final attempt after all retries
     el = getElementByUIDSafe(uid);
+    if (!el) {
+      console.warn(`Element with UID ${uid} not found after ${maxRetries} retries`);
+    }
     return el;
   } catch (e) {
+    console.error(`Error in resolveElementWithRetry for UID ${uid}:`, e);
     return null;
   }
 }
 
 async function resolveTargetElement(action) {
-  // Try by UID first
+  // Try by UID first (with retries for dynamic content)
   if (action?.target_uid) {
     const byUid = await resolveElementWithRetry(action.target_uid);
     if (byUid) return byUid;
   }
-  // Try by selector
+  
+  // Try by selector (with wait for dynamic SPAs like WhatsApp)
   const selector = action?.target_selector || action?.selector || null;
   if (selector) {
     try {
-      const el = document.querySelector(selector);
+      // First try immediate query
+      let el = document.querySelector(selector);
       if (el) return el;
+      
+      // If not found, wait up to 2 seconds for it to appear (SPAs, lazy loading)
+      console.log(`Waiting for selector: ${selector}`);
+      const found = await waitForSelector(selector, 2000);
+      if (found) {
+        el = document.querySelector(selector);
+        if (el) {
+          console.log(`Selector found after waiting: ${selector}`);
+          return el;
+        }
+      }
     } catch (e) {
-      // ignore invalid selectors
+      console.warn(`Error resolving selector ${selector}:`, e);
     }
   }
+  
   return null;
 }
 
@@ -468,8 +586,9 @@ function setElementValue(element, value) {
 function isEditableElement(el) {
   if (!el) return false;
   const tag = (el.tagName || "").toLowerCase();
-  if (tag === "input" || tag === "textarea" || el.isContentEditable)
-    return true;
+  if (tag === "input" || tag === "textarea" || el.isContentEditable) return true;
+  const role = (el.getAttribute && el.getAttribute("role")) || "";
+  if (String(role).toLowerCase() === "textbox") return true;
   return false;
 }
 
@@ -494,15 +613,66 @@ function dispatchMouseEvents(element, events) {
 }
 
 function keyPress(target, key) {
+  // Map common key names to their codes and key codes
+  const keyMap = {
+    'Enter': { code: 'Enter', keyCode: 13, which: 13 },
+    'Escape': { code: 'Escape', keyCode: 27, which: 27 },
+    'Tab': { code: 'Tab', keyCode: 9, which: 9 },
+    'Backspace': { code: 'Backspace', keyCode: 8, which: 8 },
+    'Delete': { code: 'Delete', keyCode: 46, which: 46 },
+    'ArrowUp': { code: 'ArrowUp', keyCode: 38, which: 38 },
+    'ArrowDown': { code: 'ArrowDown', keyCode: 40, which: 40 },
+    'ArrowLeft': { code: 'ArrowLeft', keyCode: 37, which: 37 },
+    'ArrowRight': { code: 'ArrowRight', keyCode: 39, which: 39 },
+    'Space': { code: 'Space', keyCode: 32, which: 32, key: ' ' },
+  };
+  
+  const keyInfo = keyMap[key] || {
+    code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+    keyCode: key.charCodeAt(0),
+    which: key.charCodeAt(0),
+  };
+  
+  const actualKey = keyInfo.key || key;
+  
+  // More complete keyboard event sequence
   const sequence = ["keydown", "keypress", "keyup"];
   for (const type of sequence) {
     const evt = new KeyboardEvent(type, {
       bubbles: true,
       cancelable: true,
-      key,
-      code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+      key: actualKey,
+      code: keyInfo.code,
+      keyCode: keyInfo.keyCode,
+      which: keyInfo.which,
+      charCode: type === 'keypress' ? keyInfo.keyCode : 0,
+      composed: true, // Important for shadow DOM
+      view: window,
     });
+    
     target.dispatchEvent(evt);
+    
+    // Some apps check for defaultPrevented
+    if (evt.defaultPrevented && type === "keydown") {
+      console.log(`Key ${actualKey} was prevented by the page`);
+    }
+  }
+  
+  // For Enter key, also trigger submit-related events if in a form
+  if (key === 'Enter' && target) {
+    try {
+      // Check if we're in a form context
+      const form = target.closest('form');
+      if (form) {
+        // Some forms listen for Enter on inputs to submit
+        const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+        if (!form.dispatchEvent(submitEvent)) {
+          console.log('Form submit was prevented');
+        }
+      }
+    } catch (e) {
+      // Ignore form check errors
+    }
   }
 }
 
@@ -574,6 +744,60 @@ function findCustomDropdownOption(valueOrText, trigger) {
     const found = matchInRoot(root);
     if (found) return found;
   }
+  return null;
+}
+
+function findAutocompleteOption(valueOrText) {
+  // Search for visible autocomplete options globally
+  const value = String(valueOrText ?? "").trim();
+  const valueLower = value.toLowerCase();
+  
+  // Common autocomplete option selectors
+  const selectors = [
+    '[role="option"]',
+    '[role="listbox"] li',
+    '[class*="autocomplete"] li',
+    '[class*="suggestion"] li',
+    '[class*="dropdown"] li',
+    '[class*="option"]',
+    'ul[role="listbox"] > *',
+    '.react-autosuggest__suggestion',
+    '.Select-option',
+  ];
+  
+  for (const selector of selectors) {
+    try {
+      const options = document.querySelectorAll(selector);
+      for (const opt of options) {
+        // Check visibility
+        const style = window.getComputedStyle(opt);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        
+        const rect = opt.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        
+        const text = normalizeText(opt.textContent || opt.innerText || "");
+        if (!text) continue;
+        
+        // Match logic: exact, case-insensitive, or contains
+        if (text === value || 
+            text.toLowerCase() === valueLower || 
+            text.toLowerCase().includes(valueLower) ||
+            valueLower.includes(text.toLowerCase())) {
+          return opt;
+        }
+        
+        // Check data attributes
+        const dataValue = opt.getAttribute?.('data-value') || opt.getAttribute?.('value');
+        if (dataValue && (dataValue === value || dataValue.toLowerCase() === valueLower)) {
+          return opt;
+        }
+      }
+    } catch (_) {
+      // Invalid selector, continue
+    }
+  }
+  
   return null;
 }
 
@@ -698,4 +922,250 @@ function navigateToUrl(action, baseResult) {
     navigationPending: true,
     targetUrl,
   };
+}
+
+// ------------------------------
+// Interaction helpers
+// ------------------------------
+
+function clickElement(element) {
+  try {
+    const rect = element.getBoundingClientRect();
+    const clientX = rect.left + Math.max(1, Math.floor(rect.width / 2));
+    const clientY = rect.top + Math.max(1, Math.floor(rect.height / 2));
+    const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0 };
+
+    // Pointer events first for modern sites
+    try { element.dispatchEvent(new PointerEvent("pointerover", opts)); } catch (_) {}
+    try { element.dispatchEvent(new PointerEvent("pointerenter", opts)); } catch (_) {}
+    try { element.dispatchEvent(new PointerEvent("pointerdown", opts)); } catch (_) {}
+    try { element.dispatchEvent(new MouseEvent("mouseover", opts)); } catch (_) {}
+    try { element.dispatchEvent(new MouseEvent("mousedown", opts)); } catch (_) {}
+    if (typeof element.focus === "function") {
+      element.focus({ preventScroll: true });
+    }
+    try { element.dispatchEvent(new PointerEvent("pointerup", opts)); } catch (_) {}
+    try { element.dispatchEvent(new MouseEvent("mouseup", opts)); } catch (_) {}
+    try { element.dispatchEvent(new MouseEvent("click", opts)); } catch (_) {}
+    // Also call native click as a fallback
+    try { element.click(); } catch (_) {}
+    return true;
+  } catch (e) {
+    try { element.click(); return true; } catch (_) { return false; }
+  }
+}
+
+function setValueReactSafe(el, value) {
+  if (!el) return false;
+  const tag = (el.tagName || "").toLowerCase();
+  try {
+    // Choose correct prototype for setter
+    let proto = null;
+    if (tag === "input") proto = window.HTMLInputElement && HTMLInputElement.prototype;
+    else if (tag === "textarea") proto = window.HTMLTextAreaElement && HTMLTextAreaElement.prototype;
+    else if (tag === "select") proto = window.HTMLSelectElement && HTMLSelectElement.prototype;
+
+    const desc = proto && Object.getOwnPropertyDescriptor(proto, "value");
+    if (desc && typeof desc.set === "function") {
+      desc.set.call(el, value);
+    } else {
+      el.value = value;
+    }
+
+    // React/Angular/Vue listeners
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  } catch (_) {
+    try {
+      el.value = value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+function typeIntoContentEditable(target, text) {
+  try {
+    if (!target) return { ok: false, detail: "No target" };
+    if (!target.isContentEditable && String(target.getAttribute?.("role") || "").toLowerCase() !== "textbox") {
+      return { ok: false, detail: "Not contentEditable" };
+    }
+
+    // Place caret at the end
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (_) {}
+
+    // Try modern beforeinput/input with data
+    const before = new InputEvent("beforeinput", {
+      inputType: "insertText",
+      data: text,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    target.dispatchEvent(before);
+    const input = new InputEvent("input", {
+      inputType: "insertText",
+      data: text,
+      bubbles: true,
+      cancelable: false,
+      composed: true,
+    });
+    target.dispatchEvent(input);
+
+    // Fallback if no change, mutate innerText
+    if (!normalizeText(target.innerText || "").includes(normalizeText(text))) {
+      try {
+        document.execCommand("insertText", false, text);
+      } catch (_) {}
+      if (!normalizeText(target.innerText || "").includes(normalizeText(text))) {
+        target.innerText = text;
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+
+    return { ok: true, mode: "contentEditable", targetUsed: tagNameSafe(target) };
+  } catch (e) {
+    return { ok: false, detail: e.message };
+  }
+}
+
+function findEditorEditable(contextEl) {
+  const roots = [];
+  if (contextEl && contextEl.ownerDocument) roots.push(contextEl.ownerDocument);
+  roots.push(document);
+  // Search near target first
+  const localRoot = contextEl ? contextEl.closest?.(".monaco-editor, .CodeMirror, .cm-editor") : null;
+  if (localRoot) roots.unshift(localRoot);
+
+  for (const root of roots) {
+    try {
+      // Monaco hidden textarea
+      let t = root.querySelector?.(".monaco-editor textarea.inputarea, .monaco-editor textarea");
+      if (t) return { target: t, kind: "monaco" };
+      // CodeMirror 5 textarea
+      t = root.querySelector?.(".CodeMirror textarea");
+      if (t) return { target: t, kind: "codemirror5" };
+      // CodeMirror 6 contenteditable div
+      t = root.querySelector?.(".cm-content[contenteditable='true']");
+      if (t) return { target: t, kind: "codemirror6" };
+      // Generic ARIA textbox
+      t = root.querySelector?.("[role='textbox'][contenteditable='true']");
+      if (t) return { target: t, kind: "aria-textbox" };
+    } catch (_) {}
+  }
+  return null;
+}
+
+function typeViaInsertText(target, text) {
+  try {
+    if (!target) return false;
+    if (typeof target.focus === "function") target.focus({ preventScroll: true });
+
+    if (text.length > 150) {
+      // Big paste-like insert
+      const before = new InputEvent("beforeinput", { inputType: "insertFromPaste", data: text, bubbles: true, cancelable: true });
+      target.dispatchEvent(before);
+      const input = new InputEvent("input", { inputType: "insertFromPaste", data: text, bubbles: true });
+      target.dispatchEvent(input);
+      return true;
+    }
+
+    // Insert as text
+    const before = new InputEvent("beforeinput", { inputType: "insertText", data: text, bubbles: true, cancelable: true });
+    target.dispatchEvent(before);
+    const input = new InputEvent("input", { inputType: "insertText", data: text, bubbles: true });
+    target.dispatchEvent(input);
+    return true;
+  } catch (_) {
+    try { document.execCommand("insertText", false, text); return true; } catch (_) { return false; }
+  }
+}
+
+function typeViaKeyboardSequence(target, text) {
+  try {
+    if (!target) return false;
+    if (typeof target.focus === "function") target.focus({ preventScroll: true });
+    const chars = String(text ?? "").split("");
+    for (const ch of chars) {
+      const key = ch;
+      target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      const before = new InputEvent("beforeinput", { inputType: "insertText", data: ch, bubbles: true, cancelable: true });
+      target.dispatchEvent(before);
+      const input = new InputEvent("input", { inputType: "insertText", data: ch, bubbles: true });
+      target.dispatchEvent(input);
+      target.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function tagNameSafe(el) {
+  try { return (el && el.tagName ? el.tagName.toLowerCase() : String(el?.nodeName || "node")); } catch (_) { return "node"; }
+}
+
+function typeIntoElement(element, text) {
+  const tag = (element?.tagName || "").toLowerCase();
+  // 1) Native inputs/textarea/select
+  if (tag === "input" || tag === "textarea" || tag === "select") {
+    const ok = setValueReactSafe(element, text);
+    return { ok, mode: tag };
+  }
+
+  // 2) ContentEditable/ARIA textbox
+  if (element.isContentEditable || String(element.getAttribute?.("role") || "").toLowerCase() === "textbox") {
+    const r = typeIntoContentEditable(element, text);
+    if (r.ok) return r;
+  }
+
+  // 3) Rich editors (Monaco/CodeMirror)
+  const editor = findEditorEditable(element);
+  if (editor && editor.target) {
+    const t = editor.target;
+    if (editor.kind === "codemirror6" || t.isContentEditable) {
+      const r = typeIntoContentEditable(t, text);
+      if (r.ok) return { ...r, mode: editor.kind };
+    }
+    // Try insertText events
+    if (typeViaInsertText(t, text)) {
+      // Dispatch change event for frameworks listening on container
+      try { t.dispatchEvent(new Event("change", { bubbles: true })); } catch (_) {}
+      return { ok: true, mode: `editor-${editor.kind}`, targetUsed: tagNameSafe(t) };
+    }
+    // Fallback to keyboard sequence
+    if (typeViaKeyboardSequence(t, text)) {
+      return { ok: true, mode: `editor-keys-${editor.kind}`, targetUsed: tagNameSafe(t) };
+    }
+  }
+
+  // 4) Final fallback: active element
+  const active = document.activeElement;
+  if (active && active !== document.body) {
+    if ((active.tagName || "").toLowerCase() === "input" || (active.tagName || "").toLowerCase() === "textarea") {
+      const ok = setValueReactSafe(active, text);
+      return { ok, mode: "active-input" };
+    }
+    if (active.isContentEditable) {
+      const r = typeIntoContentEditable(active, text);
+      if (r.ok) return { ...r, mode: "active-contentEditable" };
+    }
+    if (typeViaInsertText(active, text)) {
+      return { ok: true, mode: "active-insertText", targetUsed: tagNameSafe(active) };
+    }
+  }
+
+  return { ok: false, mode: "none", detail: "No suitable editable target" };
 }

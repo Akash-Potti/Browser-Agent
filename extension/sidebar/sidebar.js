@@ -177,6 +177,9 @@ async function handleExecute() {
     addToHistory("started", `Task: ${command}`);
     updateStatus("Capturing page DOM...", "executing");
 
+    // Wait for page to stabilize before initial capture
+    await delay(1000);
+
     // Step 2: Capture DOM from page
     const domResponse = await captureDOMFromPage();
 
@@ -235,7 +238,12 @@ async function createBackendSession(goal, url) {
 }
 
 // Capture DOM from current page
-async function captureDOMFromPage() {
+async function captureDOMFromPage(waitBeforeCapture = 0) {
+  // Wait for page to settle before capturing (useful after dynamic updates)
+  if (waitBeforeCapture > 0) {
+    await delay(waitBeforeCapture);
+  }
+  
   // Try to capture DOM from all frames; fall back to top frame if needed
   const frames = await getAllFramesSafe(state.currentTabId);
   if (!frames || frames.length <= 1) {
@@ -469,6 +477,8 @@ async function requestNextAction(domData, previousResult) {
 
     // Retry once with a fresh DOM snapshot
     try {
+      // Wait for page to settle before retry
+      await delay(1500);
       const domCapture = await captureDOMFromPage();
       if (domCapture?.success && domCapture.data) {
         return await doRequest({
@@ -578,6 +588,8 @@ async function startAutomationLoop(initialDomData) {
 
     if (!currentDom) {
       try {
+        // Wait for page to settle if we need to recapture DOM
+        await delay(1000);
         const domCapture = await captureDOMFromPage();
         if (domCapture?.success && domCapture.data) {
           currentDom = domCapture.data;
@@ -689,6 +701,8 @@ async function startAutomationLoop(initialDomData) {
         } else {
           // Try to capture DOM ourselves once
           try {
+            // Wait for page to settle before retry capture
+            await delay(1000);
             const domCapture = await captureDOMFromPage();
             if (domCapture?.success && domCapture.data) {
               addToHistory(
@@ -745,10 +759,58 @@ async function startAutomationLoop(initialDomData) {
         ? `Navigated to ${displayUrl}`
         : "Navigation detected";
       addToHistory("info", navigationMessage);
-      await delay(1500);
+      
+      // Wait for page to load after navigation
+      await delay(2500); // Initial wait for page load
+      
+      // Capture NEW DOM from the navigated page with retries
+      addToHistory("info", "Capturing DOM from new page...");
+      let freshDomResult = null;
+      let captureAttempt = 0;
+      const maxCaptureAttempts = 3;
+      
+      while (captureAttempt < maxCaptureAttempts && !freshDomResult) {
+        try {
+          captureAttempt++;
+          
+          // Add small delay before each capture attempt to let page settle
+          if (captureAttempt > 1) {
+            const waitTime = 800 * (captureAttempt - 1); // 800ms, 1600ms for retries
+            console.log(`Waiting ${waitTime}ms before attempt ${captureAttempt}...`);
+            await delay(waitTime);
+          }
+          
+          const result = await captureDOMFromPage();
+          
+          if (result && result.success && result.data && result.data.elements) {
+            const elementCount = result.data.elements.length;
+            if (elementCount > 0) {
+              freshDomResult = result;
+              currentDom = result.data;
+              addToHistory("info", `Captured ${elementCount} elements from new page`);
+              console.log(`Post-navigation DOM captured: ${elementCount} elements from ${currentDom.url}`);
+              break;
+            } else {
+              console.warn(`Attempt ${captureAttempt}: DOM captured but 0 elements, retrying...`);
+            }
+          } else {
+            console.warn(`Attempt ${captureAttempt}: DOM capture returned no data`);
+          }
+        } catch (error) {
+          console.error(`Attempt ${captureAttempt}: Error capturing DOM after navigation:`, error);
+        }
+      }
+      
+      if (!freshDomResult) {
+        addToHistory("warning", "Failed to capture DOM after navigation, will retry on next action");
+        console.error("All DOM capture attempts failed after navigation");
+        currentDom = null; // Force recapture on next iteration
+      }
+    } else {
+      // Normal action, use the new_dom from execution result
+      currentDom = executionResult.new_dom || null;
     }
 
-    currentDom = executionResult.new_dom || null;
     iteration += 1;
 
     if (!state.stopRequested) {

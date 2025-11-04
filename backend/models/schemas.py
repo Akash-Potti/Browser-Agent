@@ -11,6 +11,7 @@ ALLOWED_ACTION_TYPES: Set[str] = {
 	"open_url",
 	"m_go_to_url",
 	"select",
+	"select_autocomplete", # Select from visible autocomplete dropdown
 	"hover",
 	"press",
 	"check",

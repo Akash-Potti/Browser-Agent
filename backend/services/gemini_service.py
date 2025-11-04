@@ -52,9 +52,9 @@ Return your response in this JSON format:
     "understanding": "Brief description of what you understand the user wants",
     "relevant_elements": ["uid1", "uid2", ...],
     "first_action": {{
-        "type": "click|type|scroll|wait|navigate|go_to_url|open_url|m_go_to_url|select|hover|press|check|uncheck|submit|wait_for_selector",
+        "type": "click|type|scroll|wait|navigate|go_to_url|open_url|m_go_to_url|select|select_autocomplete|hover|press|check|uncheck|submit|wait_for_selector",
         "target_uid": "element_uid (if applicable)",
-        "value": "text to type (type action) or URL (navigate) or option value/text (select)",
+        "value": "text to type (type action) or URL (navigate) or option value/text (select/select_autocomplete)",
         "key": "Key to press (press action, e.g., Enter)",
         "duration": 1000,
         "target_selector": "CSS selector for wait_for_selector (optional)",
@@ -64,7 +64,13 @@ Return your response in this JSON format:
     "confidence": 0.0-1.0
 }}
 
-IMPORTANT: Only return valid JSON, no other text."""
+IMPORTANT: Only return valid JSON, no other text.
+
+AUTOCOMPLETE GUIDELINES:
+- After typing into a combobox/autocomplete field (role="combobox", aria-autocomplete), the next action should typically be "select_autocomplete" with the desired option text
+- select_autocomplete does NOT need a target_uid - it searches visible dropdowns globally
+- Example flow: 1) type "bangalore" into FROM field, 2) select_autocomplete with value "Bangalore, Karnataka"
+"""
 
         try:
             response = self.model.generate_content(prompt)
@@ -131,11 +137,27 @@ IMPORTANT: Only return valid JSON, no other text."""
         
         # Build previous result summary
         prev_result_summary = "No previous action"
+        just_navigated = False
+        just_typed_message = False
         if previous_result:
             if previous_result.get('success'):
+                action_type = str(previous_result.get('action', '')).lower()
                 prev_result_summary = f"Action succeeded: {previous_result.get('action')} on {previous_result.get('target_uid')}"
+                
+                # Check if we just typed into a message/text field
+                if action_type == 'type':
+                    target_uid = str(previous_result.get('target_uid', ''))
+                    # Common message input identifiers
+                    if any(keyword in target_uid.lower() for keyword in ['message', 'text', 'input', 'entry', 'composer', 'chat', 'reply']):
+                        just_typed_message = True
+                        prev_result_summary += "\n💬 Just typed text into a message/input field"
+                        prev_result_summary += "\n⚠️ IMPORTANT: Send/Submit buttons may have changed from disabled to enabled"
+                        prev_result_summary += "\n🔍 Look for enabled send buttons in the current DOM (state.disabled=false or interaction.isDisabled=false)"
+                
                 if previous_result.get('navigated'):
-                    prev_result_summary += f"\nNavigated to: {previous_result.get('url')}"
+                    just_navigated = True
+                    prev_result_summary += f"\n✅ NAVIGATED to: {previous_result.get('url')}"
+                    prev_result_summary += "\n⚠️ DOM below is from the NEW page after navigation"
                 if previous_result.get('errors'):
                     prev_result_summary += f"\nPage errors: {', '.join(previous_result.get('errors', []))}"
                 if previous_result.get('successes'):
@@ -147,6 +169,17 @@ IMPORTANT: Only return valid JSON, no other text."""
         simplified_dom = self._simplify_dom(dom_data, user_goal)
         goal_keywords = self._extract_goal_keywords(user_goal)
         
+        # Add navigation context
+        navigation_context = ""
+        if just_navigated:
+            navigation_context = f"""
+⚠️ IMPORTANT: You just navigated to a new page ({dom_data.get('url')})
+- The elements below are from the NEW page
+- Ignore any elements from the previous page
+- Focus on elements that help achieve the goal on THIS page
+- Current page title: {dom_data.get('title')}
+"""
+        
         prompt = f"""You are continuing a browser automation task.
 
 USER GOAL: {user_goal}
@@ -157,6 +190,8 @@ PREVIOUS ACTIONS:
 
 PREVIOUS ACTION RESULT:
 {prev_result_summary}
+
+{navigation_context}
 
 CURRENT PAGE STATE:
 URL: {dom_data.get('url')}
@@ -179,9 +214,9 @@ Return JSON in this exact format:
     "reason": "Why task is complete or what we're trying to do",
     "confidence": 0.0-1.0,
     "next_action": {{
-        "type": "click|type|scroll|wait|navigate|go_to_url|open_url|m_go_to_url|select|hover|press|check|uncheck|submit|wait_for_selector",
+        "type": "click|type|scroll|wait|navigate|go_to_url|open_url|m_go_to_url|select|select_autocomplete|hover|press|check|uncheck|submit|wait_for_selector",
         "target_uid": "element_uid (if applicable)",
-        "value": "text (type) | URL (navigate) | option (select)",
+        "value": "text (type) | URL (navigate) | option (select/select_autocomplete)",
         "key": "Key to press (for press action)",
         "duration": 1000,
         "target_selector": "CSS selector for wait_for_selector (optional)",
@@ -200,7 +235,12 @@ IMPORTANT RULES:
 8. Use "navigate|go_to_url|open_url|m_go_to_url" when the goal explicitly mentions a URL or site.
 9. Recommend "wait" or "wait_for_selector" when an action should reveal inputs (e.g., after clicking 'Edit profile'). Use a specific selector like input[name*="bio"], textarea[name*="bio"], [contenteditable="true"].
 10. Do NOT click the same element more than once in a row. If the last click didn't reveal a new field, try wait_for_selector or choose a different element.
-11. If no perfect match exists, choose the best available element rather than returning null."""
+11. If no perfect match exists, choose the best available element rather than returning null.
+12. AUTOCOMPLETE FLOW: After a successful TYPE action on a combobox/autocomplete field, if you see options appeared in the previous result, use "select_autocomplete" (NO target_uid needed) with the desired option text as value.
+13. ⚠️ AFTER NAVIGATION: If the previous action was a navigation and you see elements from the new page, you can proceed immediately. The page has already loaded.
+14. 🔑 SENDING MESSAGES: After typing a message, look for a "Send" button to click. DO NOT use "press" action with Enter key - modern messaging apps (WhatsApp, Slack, Discord, etc.) require clicking the Send button. Only use "press" for special keys in specific contexts (like Escape to close dialogs).
+15. 📨 CRITICAL - MESSAGING APPS: Typing text into a message input field does NOT send the message! You MUST find and click the Send button after typing. Common send button indicators: text like "Send", "Post", "Submit", icons like ➤ ▶ 📤, aria-label="Send", data-testid contains "send" or "submit". The task is NOT complete until the send button is clicked and the message appears in the conversation thread.
+16. 🔓 DISABLED BUTTONS: Send/Submit buttons are often DISABLED until text is entered. After a successful TYPE action, the send button may become ENABLED. Look for buttons with state.disabled=false or interaction.isDisabled=false after typing. The button that was disabled in previous DOM may now be enabled in the current DOM. Don't skip clicking send just because you saw it was disabled before typing."""
 
         try:
             response = self.model.generate_content(prompt)
@@ -239,6 +279,13 @@ URL: {dom_data.get('url')}
 Title: {dom_data.get('title')}
 
 QUESTION: Has the user's goal been achieved?
+
+CRITICAL CHECKS FOR MESSAGING TASKS:
+- If the goal involves sending a message (e.g., "message X", "send Y", "DM Z"):
+  - Typing the message is NOT enough - you must verify the send button was clicked
+  - Look for actions like "CLICK on send button" or "CLICK on submit"
+  - Check if the message appears in the conversation thread
+  - If you only see TYPE actions without a subsequent CLICK on send/submit, the task is NOT complete
 
 Return JSON:
 {{
@@ -295,6 +342,8 @@ IMPORTANT: Only return valid JSON, no other text."""
                 score += 4
             if aria_label or title:
                 score += 2
+            if data_test:
+                score += 3  # data-testid is a strong signal (Twitter, React apps)
             if text:
                 score += min(len(text) / 20.0, 4)
 
@@ -307,6 +356,7 @@ IMPORTANT: Only return valid JSON, no other text."""
                         (title or '').lower(),
                         (placeholder or '').lower(),
                         (classes or '').lower(),
+                        (data_test or '').lower(),  # Include testid in searchable text
                     ],
                 )
             )
@@ -314,11 +364,21 @@ IMPORTANT: Only return valid JSON, no other text."""
             if keywords and aggregate_text:
                 keyword_hits = sum(1 for kw in keywords if kw in aggregate_text)
                 score += keyword_hits * 3
+            
+            # Boost score for send/submit buttons (important for messaging)
+            if any(term in aggregate_text for term in ['send', 'submit', 'post', 'reply', 'message']):
+                if tag == 'button' or role == 'button':
+                    score += 5  # Prioritize send buttons
 
             bounds = elem.get('bounds') or {}
             top = bounds.get('top')
             if isinstance(top, (int, float)):
                 score += max(0.0, 4 - (top / 250.0))
+            
+            # Get disabled state from element
+            state = elem.get('state', {}) or {}
+            interaction = elem.get('interaction', {}) or {}
+            is_disabled = state.get('disabled', False) or interaction.get('isDisabled', False)
 
             simplified.append({
                 'uid': elem.get('uid'),
@@ -333,6 +393,7 @@ IMPORTANT: Only return valid JSON, no other text."""
                 'dataTestId': data_test,
                 'class': (classes[:140] + '…') if classes and len(classes) > 140 else classes,
                 'inViewport': elem.get('isInViewport'),
+                'disabled': is_disabled,  # Include disabled state
                 'score': round(score, 2),
                 'index': index,
                 'bounds': {

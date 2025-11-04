@@ -63,20 +63,46 @@ function captureDOM(options = {}) {
 function getInteractiveElements(options = {}) {
   const maxShadowDepth = Number(options.maxShadowDepth ?? 3);
   const selectors = [
+    // Standard form elements - ALL states
     "button",
-    '[aria-haspopup="listbox"]',
-    '[aria-haspopup="menu"]',
-    '[aria-haspopup="dialog"]',
-    "a[href]",
-    "area[href]",
+    "button:disabled",
     "input",
+    "input:disabled",
+    "input[type='hidden']", // Even hidden inputs
     "select",
+    "select:disabled",
     "textarea",
+    "textarea:disabled",
+    
+    // Links and navigation
+    "a",
+    "a[href]",
+    "a:not([href])",
+    "area",
+    "area[href]",
+    
+    // Interactive HTML5 elements
     "summary",
     "details",
+    "video",
+    "audio",
+    "canvas",
+    "iframe",
+    
+    // Form-related
+    "label",
+    "label[for]",
+    "option",
+    "fieldset",
+    "legend",
+    "form",
+    
+    // All ARIA roles
     '[role="button"]',
     '[role="link"]',
     '[role="textbox"]',
+    '[role="combobox"]',
+    '[role="searchbox"]',
     '[role="menuitem"]',
     '[role="menuitemcheckbox"]',
     '[role="menuitemradio"]',
@@ -91,15 +117,59 @@ function getInteractiveElements(options = {}) {
     '[role="radio"]',
     '[role="switch"]',
     '[role="slider"]',
-    '[role="combobox"]',
     '[role="listbox"]',
+    '[role="menu"]',
+    '[role="menubar"]',
+    '[role="tablist"]',
+    '[role="tree"]',
+    '[role="grid"]',
+    '[role="dialog"]',
+    '[role="alertdialog"]',
+    '[role="navigation"]',
+    '[role="main"]',
+    '[role="complementary"]',
+    '[role="banner"]',
+    '[role="contentinfo"]',
+    '[role="form"]',
+    '[role="search"]',
+    
+    // ARIA attributes (autocomplete, popups, controls)
+    '[aria-haspopup]',
+    '[aria-haspopup="true"]',
     '[aria-haspopup="listbox"]',
     '[aria-haspopup="menu"]',
     '[aria-haspopup="dialog"]',
+    '[aria-controls]',
+    '[aria-autocomplete]',
+    '[aria-expanded]',
+    '[aria-pressed]',
+    '[aria-checked]',
+    '[aria-selected]',
+    '[aria-disabled]', // Even disabled ones
+    '[aria-hidden]', // Even hidden ones
+    
+    // Interactive attributes
     "[onclick]",
+    "[onmousedown]",
+    "[onmouseup]",
+    "[onkeydown]",
+    "[onkeyup]",
+    "[onfocus]",
+    "[onblur]",
     '[contenteditable="true"]',
+    '[contenteditable=""]',
+    '[contenteditable]',
+    '[draggable="true"]',
+    
+    // Tabindex (all values, including -1)
+    '[tabindex]',
     '*[tabindex]:not([tabindex="-1"])',
+    '*[tabindex="0"]',
+    '*[tabindex="-1"]', // Even non-focusable ones
+    
+    // Data attributes (testing/automation hooks)
     "[data-testid]",
+    "[data-test-id]",
     "[data-test]",
     "[data-action]",
     "[data-command]",
@@ -108,22 +178,75 @@ function getInteractiveElements(options = {}) {
     "[data-interactive]",
     "[data-role]",
     "[data-type]",
-    '[aria-haspopup="true"]',
-    "[aria-controls]",
-    "video",
-    "audio",
-    "iframe",
+    "[data-focusable]",
+    "[data-id]",
+    "[data-key]",
+    "[data-value]",
+    "[data-name]",
+    
+    // Common UI element class patterns
     "[class*='btn']",
+    "[class*='Btn']",
     "[class*='button']",
+    "[class*='Button']",
     "[class*='clickable']",
+    "[class*='Clickable']",
     "[class*='action']",
+    "[class*='Action']",
     "[class*='toggle']",
-    "label[for]",
-    "option",
-    "fieldset",
-    "legend",
-    "canvas",
+    "[class*='Toggle']",
+    "[class*='input']",
+    "[class*='Input']",
+    "[class*='field']",
+    "[class*='Field']",
+    "[class*='search']",
+    "[class*='Search']",
+    "[class*='autocomplete']",
+    "[class*='dropdown']",
+    "[class*='Dropdown']",
+    "[class*='menu']",
+    "[class*='Menu']",
+    "[class*='modal']",
+    "[class*='Modal']",
+    "[class*='dialog']",
+    "[class*='Dialog']",
+    "[class*='icon']",
+    "[class*='Icon']",
+    "[class*='link']",
+    "[class*='Link']",
+    
+    // SVG elements (icons, graphics)
     "svg",
+    "svg[role]",
+    "svg[aria-label]",
+    
+    // Generic containers that might be interactive (SPAs)
+    "div[role]",
+    "span[role]",
+    "div[onclick]",
+    "span[onclick]",
+    "div[tabindex]",
+    "span[tabindex]",
+    "div[data-testid]",
+    "span[data-testid]",
+    
+    // List elements (often clickable in SPAs)
+    "li",
+    "ul",
+    "ol",
+    
+    // Headers (sometimes clickable accordions)
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    
+    // Images (sometimes clickable)
+    "img",
+    "img[onclick]",
+    "picture",
+    
+    // Catch-all for any potentially interactive element
+    "*[class*='interactive']",
+    "*[class*='Interactive']",
+    "*[data-interactive]",
   ];
 
   // Collect from document and open shadow roots
@@ -298,14 +421,43 @@ function isElementVisible(element) {
   const style = getStyle(element);
   if (
     style.display === "none" ||
-    style.visibility === "hidden" ||
-    style.opacity === "0"
+    style.visibility === "hidden"
   ) {
     return false;
   }
 
+  // Allow opacity 0 elements if they're interactive (some sites hide inputs this way)
+  const isInteractive = 
+    element.tagName && 
+    ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(element.tagName.toUpperCase()) ||
+    element.hasAttribute('onclick') ||
+    element.hasAttribute('role');
+  
+  if (style.opacity === "0" && !isInteractive) {
+    return false;
+  }
+
   const rect = element.getBoundingClientRect();
+  
+  // Allow zero-size elements if they're inputs (often styled/positioned)
+  const isInput = element.tagName && ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName.toUpperCase());
+  
   if (rect.width === 0 || rect.height === 0) {
+    if (isInput) {
+      // Input might be styled/positioned - check if parent is visible
+      const parent = element.parentElement;
+      if (parent) {
+        const parentStyle = getStyle(parent);
+        const parentRect = parent.getBoundingClientRect();
+        if (parentStyle.display !== "none" && 
+            parentStyle.visibility !== "hidden" && 
+            (parentRect.width > 0 || parentRect.height > 0)) {
+          return true; // Parent is visible, so input is likely accessible
+        }
+      }
+    }
+    
+    // Check if has visible children
     const children = Array.from(element.children);
     const hasVisibleChild = children.some((child) => {
       const childStyle = getStyle(child);
@@ -327,8 +479,7 @@ function isElementVisible(element) {
     const st = getStyle(ancestor);
     if (
       st.display === "none" ||
-      st.visibility === "hidden" ||
-      st.opacity === "0"
+      st.visibility === "hidden"
     ) {
       return false;
     }
@@ -336,7 +487,7 @@ function isElementVisible(element) {
     depth++;
   }
 
-  // Within nearest scrollable container
+  // Within nearest scrollable container (relaxed check)
   const scroller = findScrollableAncestor(element);
   if (
     scroller &&
@@ -345,9 +496,9 @@ function isElementVisible(element) {
   ) {
     const srect = scroller.getBoundingClientRect();
     const horizontallyVisible =
-      rect.right > srect.left && rect.left < srect.right;
+      rect.right > srect.left - 50 && rect.left < srect.right + 50; // Allow slight overflow
     const verticallyVisible =
-      rect.bottom > srect.top && rect.top < srect.bottom;
+      rect.bottom > srect.top - 50 && rect.top < srect.bottom + 50;
     if (!(horizontallyVisible && verticallyVisible)) {
       return false;
     }
@@ -361,30 +512,8 @@ function isActionableElement(element) {
     return false;
   }
 
-  if (!isElementVisible(element)) {
-    return false;
-  }
-
-  const style = window.getComputedStyle(element);
-  if (style.pointerEvents === "none") {
-    return false;
-  }
-
-  if (element.disabled || element.getAttribute("aria-disabled") === "true") {
-    return false;
-  }
-
-  const ariaHidden = (element.getAttribute("aria-hidden") || "").toLowerCase();
-  const hasHref = element.hasAttribute("href");
-  const hasOnClick =
-    typeof element.onclick === "function" || element.hasAttribute("onclick");
-  const role = (element.getAttribute("role") || "").toLowerCase();
-  const focusable = element.tabIndex >= 0;
-
-  if (ariaHidden === "true" && !hasHref && !hasOnClick && !focusable && !role) {
-    return false;
-  }
-
+  // CAPTURE EVERYTHING - no filtering by visibility, disabled state, or aria-hidden
+  // The AI can decide what's actionable based on complete DOM context
   return true;
 }
 
@@ -420,6 +549,36 @@ function serializeElement(element, index) {
     const xpath = generateXPath(element);
     const shadowPath = generateShadowPath(element);
     const frame = getFrameInfo(element);
+    
+    // Comprehensive visibility and interaction metadata
+    const style = window.getComputedStyle(element);
+    const visibilityInfo = {
+      isVisible: isElementVisible(element),
+      display: style.display,
+      visibility: style.visibility,
+      opacity: style.opacity,
+      pointerEvents: style.pointerEvents,
+      zIndex: style.zIndex,
+    };
+    
+    // Interaction capabilities
+    const interactionInfo = {
+      hasClickHandler: typeof element.onclick === 'function' || element.hasAttribute('onclick'),
+      hasEventListeners: false, // Will be set below
+      isFocusable: element.tabIndex >= 0,
+      isDisabled: element.disabled || element.getAttribute('aria-disabled') === 'true',
+      isReadOnly: element.readOnly || element.getAttribute('aria-readonly') === 'true',
+      ariaHidden: element.getAttribute('aria-hidden') === 'true',
+    };
+    
+    // Check for runtime event listeners
+    try {
+      if (window.__baEventListenerRegistry && window.__baEventListenerRegistry.map.has(element)) {
+        const events = Array.from(window.__baEventListenerRegistry.map.get(element) || []);
+        interactionInfo.hasEventListeners = events.length > 0;
+        interactionInfo.eventTypes = events;
+      }
+    } catch (_) {}
 
     if (typeof registerUID === "function") {
       try {
@@ -444,6 +603,8 @@ function serializeElement(element, index) {
       accessibleName: accessibleName,
       labels: labels,
       state: state,
+      visibility: visibilityInfo,
+      interaction: interactionInfo,
       isInViewport: isInViewport(rect),
       tabIndex: element.tabIndex,
       bounds: bounds,
@@ -536,17 +697,53 @@ function simpleHash(str) {
 function getElementText(element) {
   let text = "";
 
-  // Try different text sources
-  if (element.value) {
+  // Try different text sources in priority order
+  if (element.value && element.value.trim()) {
     text = element.value;
+  } else if (element.getAttribute && element.getAttribute('aria-label')) {
+    text = element.getAttribute('aria-label');
   } else if (element.placeholder) {
     text = `[${element.placeholder}]`;
-  } else if (element.textContent) {
+  } else if (element.textContent && element.textContent.trim()) {
     text = element.textContent;
   } else if (element.alt) {
     text = element.alt;
   } else if (element.title) {
     text = element.title;
+  } else {
+    // For SVG buttons or icon buttons without text, use data-testid as hint
+    const testId = element.getAttribute && element.getAttribute('data-testid');
+    if (testId) {
+      // Convert camelCase/kebab-case to readable text
+      // e.g., "tweetButton" -> "Tweet Button", "send-message" -> "Send Message"
+      const readable = testId
+        .replace(/([a-z])([A-Z])/g, '$1 $2') // camelCase
+        .replace(/[-_]/g, ' ') // kebab/snake case
+        .replace(/\b\w/g, (c) => c.toUpperCase()); // capitalize
+      text = `[${readable}]`;
+    }
+  }
+  
+  // For inputs with associated labels, include label text
+  if (element.tagName && element.tagName.toLowerCase() === 'input' && element.id) {
+    try {
+      const label = document.querySelector(`label[for="${element.id}"]`);
+      if (label && label.textContent) {
+        const labelText = label.textContent.trim();
+        if (labelText && !text.includes(labelText)) {
+          text = text ? `${labelText}: ${text}` : labelText;
+        }
+      }
+    } catch (_) {}
+  }
+  
+  // For buttons/links with only icons, check for nearby text or tooltips
+  if (!text || text.length < 3) {
+    const ariaDescribedBy = element.getAttribute && element.getAttribute('aria-describedby');
+    if (ariaDescribedBy) {
+      const desc = document.getElementById(ariaDescribedBy);
+      if (desc) text = desc.textContent.trim() || text;
+    }
   }
 
   // Clean and limit text
@@ -630,6 +827,8 @@ function getElementState(element) {
     expanded: undefined,
     hasPopup: undefined,
     optionCount: undefined,
+    autocomplete: undefined,
+    required: Boolean(element.required || element.getAttribute?.("aria-required") === "true"),
   };
   try {
     const ariaExpanded =
@@ -638,6 +837,9 @@ function getElementState(element) {
     const ariaHasPopup =
       element.getAttribute && element.getAttribute("aria-haspopup");
     if (ariaHasPopup) state.hasPopup = ariaHasPopup;
+    const ariaAutocomplete =
+      element.getAttribute && element.getAttribute("aria-autocomplete");
+    if (ariaAutocomplete) state.autocomplete = ariaAutocomplete;
   } catch (_) {}
   if (tag === "input") {
     if (element.type === "checkbox" || element.type === "radio")
@@ -692,11 +894,15 @@ function getRelevantAttributes(element) {
     "aria-controls",
     "aria-expanded",
     "aria-haspopup",
+    "aria-autocomplete",
     "aria-current",
+    "aria-required",
     "title",
     "role",
     "tabindex",
     "list",
+    "autocomplete",
+    "for", // label's for attribute
     "data-testid",
     "data-test-id",
     "data-test",
@@ -711,6 +917,8 @@ function getRelevantAttributes(element) {
     "data-qa",
     "data-url",
     "data-href",
+    "data-id",
+    "data-key",
   ];
 
   relevantAttrs.forEach((attr) => {
@@ -754,6 +962,15 @@ function getElementType(element) {
   const role = element.getAttribute("role");
   if (role) {
     return `role_${role}`;
+  }
+  
+  // Check for data-testid (Twitter/React apps use this extensively)
+  const testId = element.getAttribute("data-testid");
+  if (testId) {
+    // Extract meaningful type from testId (e.g., "tweetButton" -> "button")
+    if (testId.toLowerCase().includes("button")) return "button";
+    if (testId.toLowerCase().includes("link")) return "link";
+    return `testid_${testId.split(/[-_]/)[0]}`; // First part of testid
   }
 
   return tag;
